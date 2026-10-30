@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { createTextureSet, createSkyTexture, createCheckerTexture, createSignTexture } from './textures.js';
 import { worldPoint } from './physics.js';
+import { BIKE } from './config.js';
 
 function seeded(seed) {
   return () => {
@@ -85,21 +86,31 @@ function createMountain(level,color,z,seed,amplitude,base) {
   mesh.position.z=z;return mesh;
 }
 
-function createWheel(mats) {
+function createWheel(mats, R) {
+  // Внешний радиус покрышки (с протектором) строго равен физическому радиусу R — колесо не «тонет» в земле.
   const group=new THREE.Group();
-  const tire=new THREE.Mesh(new THREE.TorusGeometry(.43,.085,9,32),mats.tire);tire.castShadow=true;group.add(tire);
-  const rim=new THREE.Mesh(new THREE.TorusGeometry(.29,.027,7,28),mats.rim);group.add(rim);
+  const tube=.07, rimR=R*.62;
+  const tire=new THREE.Mesh(new THREE.TorusGeometry(R-tube,tube,9,32),mats.tire);tire.castShadow=true;group.add(tire);
+  const rim=new THREE.Mesh(new THREE.TorusGeometry(rimR,.026,7,28),mats.rim);group.add(rim);
   const hub=new THREE.Mesh(new THREE.CylinderGeometry(.065,.065,.15,12),mats.rim);hub.rotation.x=Math.PI/2;group.add(hub);
-  const spokes=new THREE.InstancedMesh(new THREE.BoxGeometry(.025,.53,.025),mats.rim,10);
-  const treads=new THREE.InstancedMesh(new THREE.BoxGeometry(.105,.055,.14),mats.tire,24);
+  const spokeCount=12, treadCount=Math.round(R*60);
+  const spokes=new THREE.InstancedMesh(new THREE.BoxGeometry(.022,rimR*2,.022),mats.rim,spokeCount);
+  const treads=new THREE.InstancedMesh(new THREE.BoxGeometry(.105,.05,.14),mats.tire,treadCount);
   const dummy=new THREE.Object3D();
-  for(let i=0;i<10;i++){
-    const a=i/10*Math.PI*2;dummy.position.set(Math.cos(a)*.14,Math.sin(a)*.14,0);dummy.rotation.set(0,0,a-Math.PI/2);dummy.updateMatrix();spokes.setMatrixAt(i,dummy.matrix);
+  for(let i=0;i<spokeCount;i++){
+    const a=i/spokeCount*Math.PI;dummy.position.set(0,0,0);dummy.rotation.set(0,0,a);dummy.updateMatrix();spokes.setMatrixAt(i,dummy.matrix);
   }
-  for(let i=0;i<24;i++){
-    const a=i/24*Math.PI*2;dummy.position.set(Math.cos(a)*.455,Math.sin(a)*.455,0);dummy.rotation.set(0,0,a-Math.PI/2);dummy.updateMatrix();treads.setMatrixAt(i,dummy.matrix);
+  for(let i=0;i<treadCount;i++){
+    const a=i/treadCount*Math.PI*2;dummy.position.set(Math.cos(a)*(R-.025),Math.sin(a)*(R-.025),0);dummy.rotation.set(0,0,a-Math.PI/2);dummy.updateMatrix();treads.setMatrixAt(i,dummy.matrix);
   }
   group.add(spokes,treads);return group;
+}
+
+function extrudePoly(points,depth,mat) {
+  const shape=new THREE.Shape();shape.moveTo(points[0][0],points[0][1]);
+  for(let i=1;i<points.length;i++)shape.lineTo(points[i][0],points[i][1]);shape.closePath();
+  const mesh=new THREE.Mesh(new THREE.ExtrudeGeometry(shape,{depth,bevelEnabled:true,bevelSize:.012,bevelThickness:.012,bevelSegments:1}),mat);
+  mesh.castShadow=true;return mesh;
 }
 
 function createBike(textures) {
@@ -107,39 +118,58 @@ function createBike(textures) {
     tire:material('#171a1b',null,.96),rim:material('#b9c1bd',textures.metal,.3,.75),
     frame:material('#e8e1d2',textures.metal,.38,.55),dark:material('#24282a',textures.metal,.55,.45),
     orange:material('#e95c31',null,.6,.08),engine:material('#5e6667',textures.metal,.4,.7),
+    gold:material('#d3a13a',textures.metal,.35,.7),cream:material('#efe9d8',null,.5,.1),
     jersey:material('#ec6a36',null,.8),pants:material('#242c31',null,.9),helmet:material('#ede8da',null,.35,.15),
     skin:material('#b77c5b',null,.9)
   };
+  // Рама триального мотоцикла (референс): низкая, без бака, длинный хвост, труба глушителя вдоль двигателя.
   const chassis=new THREE.Group();
-  chassis.add(makeRod([-.63,.02],[.42,.02],.055,mats.frame,.12));
-  chassis.add(makeRod([-.38,-.18],[-.12,.42],.05,mats.frame,.12));
-  chassis.add(makeRod([-.12,.42],[.42,.02],.05,mats.frame,.12));
-  chassis.add(makeRod([-.38,-.18],[.42,.02],.045,mats.frame,.12));
-  chassis.add(makeRod([-.12,.42],[-.55,.35],.045,mats.dark,.12));
-  const tankShape=new THREE.Shape();tankShape.moveTo(-.18,.22);tankShape.lineTo(.26,.25);tankShape.lineTo(.38,.48);tankShape.lineTo(-.04,.58);tankShape.lineTo(-.28,.43);tankShape.closePath();
-  const tank=new THREE.Mesh(new THREE.ExtrudeGeometry(tankShape,{depth:.16,bevelEnabled:true,bevelSize:.025,bevelThickness:.025,bevelSegments:2}),mats.orange);tank.position.z=.02;tank.castShadow=true;chassis.add(tank);
-  const seat=boxMesh(.64,.12,.24,mats.dark);seat.position.set(-.39,.5,.12);seat.rotation.z=-.06;chassis.add(seat);
-  const engine=boxMesh(.48,.4,.26,mats.engine);engine.position.set(-.05,.01,.12);chassis.add(engine);
-  for(let i=0;i<4;i++){const fin=boxMesh(.52,.025,.29,mats.rim);fin.position.set(-.05,-.10+i*.08,.12);chassis.add(fin);}
-  chassis.add(makeRod([-.45,-.02],[-.82,.16],.045,mats.dark,.06));
-  chassis.add(makeRod([.36,.35],[.48,.78],.035,mats.rim,.12));
-  chassis.add(makeRod([.33,.77],[.67,.77],.028,mats.dark,.12));
-  const lamp=new THREE.Mesh(new THREE.CircleGeometry(.105,16),new THREE.MeshStandardMaterial({color:'#f6e8b5',emissive:'#d9a643',emissiveIntensity:.45}));lamp.position.set(.58,.56,.2);chassis.add(lamp);
+  const Z=.12;
+  chassis.add(makeRod([.27,.40],[-.30,.26],.05,mats.frame,Z));          // верхняя балка
+  chassis.add(makeRod([.27,.38],[.12,-.26],.05,mats.frame,Z));          // передняя труба
+  chassis.add(makeRod([.12,-.28],[-.32,-.30],.045,mats.frame,Z));       // нижняя балка
+  chassis.add(makeRod([-.30,.26],[-.32,-.30],.045,mats.frame,Z));       // подседельная труба
+  chassis.add(makeRod([-.30,.26],[-.80,.36],.04,mats.frame,Z));         // подрамник
+  chassis.add(makeRod([-.30,.10],[-.74,.32],.03,mats.dark,Z));          // раскос
+  chassis.add(makeRod([.33,.58],[.26,.38],.065,mats.dark,Z));           // рулевая колонка
+  // хвост-обтекатель, поднимающийся к задку
+  const tail=extrudePoly([[-.24,.30],[-.55,.38],[-1.12,.52],[-1.14,.46],[-.62,.31],[-.28,.20]],.20,mats.orange);tail.position.z=.02;chassis.add(tail);
+  const seat=boxMesh(.42,.07,.2,mats.dark);seat.position.set(-.50,.41,.12);seat.rotation.z=-.15;chassis.add(seat);
+  // двигатель
+  const engine=boxMesh(.52,.36,.26,mats.engine);engine.position.set(-.02,-.10,.12);chassis.add(engine);
+  for(let i=0;i<4;i++){const fin=boxMesh(.56,.025,.29,mats.rim);fin.position.set(-.02,-.01+i*.08,.12);chassis.add(fin);}
+  const cover=new THREE.Mesh(new THREE.CylinderGeometry(.12,.12,.05,16),mats.rim);cover.rotation.x=Math.PI/2;cover.position.set(-.14,-.12,.27);chassis.add(cover);
+  const skid=boxMesh(.62,.04,.24,mats.dark);skid.position.set(-.06,-.30,.12);chassis.add(skid);
+  // выхлоп: изогнутая труба от цилиндра назад над колесом + глушитель
+  const pipeCurve=new THREE.CatmullRomCurve3([[.14,-.22],[.25,-.02],[.18,.14],[-.10,.17],[-.50,.15],[-.80,.22]].map(p=>new THREE.Vector3(p[0],p[1],.27)));
+  const pipe=new THREE.Mesh(new THREE.TubeGeometry(pipeCurve,28,.032,7,false),mats.rim);pipe.castShadow=true;chassis.add(pipe);
+  chassis.add(makeRod([-.62,.19],[-1.04,.30],.062,mats.rim,.27));
+  // подножка, руль
+  const peg=boxMesh(.16,.04,.2,mats.dark);peg.position.set(-.10,-.30,.30);chassis.add(peg);
+  chassis.add(makeRod([.22,.80],[.38,.85],.028,mats.dark,.12));
+  const clamp=boxMesh(.12,.06,.2,mats.dark);clamp.position.set(.34,.64,.12);clamp.rotation.z=.39;chassis.add(clamp);
 
+  // гонщик в стойке (как в триале: стоя на подножках)
   const rider=new THREE.Group();
-  rider.add(makeRod([-.30,.60],[-.14,1.10],.14,mats.jersey,.20));
-  rider.add(makeRod([-.28,.63],[-.48,.14],.085,mats.pants,.16));
-  rider.add(makeRod([-.48,.14],[-.12,-.04],.075,mats.pants,.16));
-  rider.add(makeRod([-.18,1.02],[.16,.82],.065,mats.jersey,.23));
-  rider.add(makeRod([.16,.82],[.48,.77],.052,mats.skin,.23));
-  rider.add(makeRod([-.26,.98],[.04,.76],.065,mats.jersey,.10));
-  rider.add(makeRod([.04,.76],[.40,.75],.052,mats.skin,.10));
-  const helmet=new THREE.Mesh(new THREE.SphereGeometry(.19,18,12),mats.helmet);helmet.position.set(-.12,1.28,.20);helmet.scale.set(1,1.08,.8);helmet.castShadow=true;rider.add(helmet);
-  const visor=boxMesh(.19,.055,.12,mats.dark);visor.position.set(.015,1.30,.30);rider.add(visor);
-  const stripe=boxMesh(.045,.30,.025,mats.orange);stripe.position.set(-.13,1.30,.36);stripe.rotation.z=-.2;rider.add(stripe);
+  rider.add(makeRod([-.32,.50],[-.10,1.04],.14,mats.jersey,.20));       // торс
+  rider.add(makeRod([-.32,.50],[-.16,.14],.085,mats.pants,.16));        // бедро
+  rider.add(makeRod([-.16,.14],[-.10,-.26],.075,mats.pants,.16));       // голень
+  rider.add(makeRod([-.12,1.00],[.12,.90],.065,mats.jersey,.23));       // плечо
+  rider.add(makeRod([.12,.90],[.34,.83],.052,mats.skin,.23));           // предплечье
+  rider.add(makeRod([-.16,.96],[.08,.88],.065,mats.jersey,.10));
+  rider.add(makeRod([.08,.88],[.32,.82],.052,mats.skin,.10));
+  const helmet=new THREE.Mesh(new THREE.SphereGeometry(.19,18,12),mats.helmet);helmet.position.set(-.02,1.28,.20);helmet.scale.set(1,1.08,.8);helmet.castShadow=true;rider.add(helmet);
+  const visor=boxMesh(.19,.055,.12,mats.dark);visor.position.set(.115,1.30,.30);rider.add(visor);
+  const stripe=boxMesh(.045,.30,.025,mats.orange);stripe.position.set(-.03,1.30,.36);stripe.rotation.z=-.2;rider.add(stripe);
   chassis.add(rider);
 
-  return {chassis,rider,rear:createWheel(mats),front:createWheel(mats),mats};
+  // переднее крыло едет вместе с колесом и не врезается в покрышку при ходе подвески
+  const R=BIKE.front.r, fender=new THREE.Group();
+  const fs=new THREE.Shape(),a0=.45,a1=2.05,ri=R+.06,ro=R+.10;
+  fs.moveTo(Math.cos(a0)*ro,Math.sin(a0)*ro);fs.absarc(0,0,ro,a0,a1,false);fs.lineTo(Math.cos(a1)*ri,Math.sin(a1)*ri);fs.absarc(0,0,ri,a1,a0,true);fs.closePath();
+  const fenderMesh=new THREE.Mesh(new THREE.ExtrudeGeometry(fs,{depth:.18,bevelEnabled:false}),mats.cream);fenderMesh.position.z=-.09;fenderMesh.castShadow=true;fender.add(fenderMesh);
+
+  return {chassis,rider,rear:createWheel(mats,BIKE.rear.r),front:createWheel(mats,BIKE.front.r),fender,mats};
 }
 
 class ParticlePool {
@@ -245,7 +275,7 @@ export class TrialWorld {
     }
     for(const rock of this.level.rocks){
       const mesh=new THREE.Mesh(new THREE.DodecahedronGeometry(rock.r,1),material('#ffffff',this.textures.rock,1));
-      mesh.position.set(rock.x,rock.y,-.02);mesh.scale.set(1.05,.9,.8);mesh.rotation.z=rock.x;mesh.castShadow=true;this.group.add(mesh);
+      mesh.position.set(rock.x,rock.y,-.02);mesh.scale.set(1,1,.8);mesh.rotation.z=rock.x;mesh.castShadow=true;this.group.add(mesh);
     }
     for(const prop of this.level.crates){
       const mesh=boxMesh(prop.s,prop.s,.65,material('#ffffff',this.textures.wood,.9));this.group.add(mesh);this.propMeshes.push({mesh,bodyIndex:this.propMeshes.length});
@@ -261,12 +291,18 @@ export class TrialWorld {
   }
 
   buildBike(){
-    this.bike=createBike(this.textures);this.group.add(this.bike.chassis,this.bike.rear,this.bike.front);
-    this.frontFork=[dynamicRod(.035,this.bike.mats.rim,.09),dynamicRod(.035,this.bike.mats.rim,.20)];
-    this.rearFork=[dynamicRod(.045,this.bike.mats.dark,.08),dynamicRod(.045,this.bike.mats.dark,.18)];
-    this.group.add(...this.frontFork,...this.rearFork);
-    this.shadow=new THREE.Mesh(new THREE.CircleGeometry(.85,24),new THREE.MeshBasicMaterial({color:'#101412',transparent:true,opacity:.24,depthWrite:false}));
-    this.shadow.scale.y=.20;this.shadow.position.z=-.05;this.group.add(this.shadow);
+    this.bike=createBike(this.textures);this.group.add(this.bike.chassis,this.bike.rear,this.bike.front,this.bike.fender);
+    const m=this.bike.mats;
+    // передняя вилка: неподвижные верхние трубы + выдвигающиеся нижние (золотые)
+    this.forkUpper=[dynamicRod(.052,m.rim,.09),dynamicRod(.052,m.rim,.20)];
+    this.forkLower=[dynamicRod(.036,m.gold,.09),dynamicRod(.036,m.gold,.20)];
+    // задняя подвеска: маятник, амортизатор с пружиной, цепь
+    this.swingarm=[dynamicRod(.045,m.dark,.07),dynamicRod(.045,m.dark,.19)];
+    this.shock=dynamicRod(.028,m.rim,.30);this.shockSpring=dynamicRod(.05,m.gold,.30);
+    this.chain=dynamicRod(.012,m.dark,.27);
+    this.group.add(...this.forkUpper,...this.forkLower,...this.swingarm,this.shock,this.shockSpring,this.chain);
+    this.shadow=new THREE.Mesh(new THREE.CircleGeometry(1.25,24),new THREE.MeshBasicMaterial({color:'#101412',transparent:true,opacity:.24,depthWrite:false}));
+    this.shadow.scale.y=.16;this.shadow.position.z=-.05;this.group.add(this.shadow);
   }
 
   sync(physics,input,dt,time){
@@ -277,9 +313,21 @@ export class TrialWorld {
     this.bike.front.position.set(fp.x,fp.y,.42);this.bike.front.rotation.z=-front.angle;
     const c=Math.cos(angle),s=Math.sin(angle);
     const local=(x,y)=>({x:cp.x+x*c-y*s,y:cp.y+x*s+y*c});
-    const fa=local(.43,.34),ra=local(-.36,.02);
-    setDynamicRod(this.frontFork[0],fa,fp,.48);setDynamicRod(this.frontFork[1],fa,fp,.58);
-    setDynamicRod(this.rearFork[0],ra,rp,.47);setDynamicRod(this.rearFork[1],ra,rp,.56);
+    const lerp=(p,q,t)=>({x:p.x+(q.x-p.x)*t,y:p.y+(q.y-p.y)*t});
+    // вилка: верхние трубы привязаны к раме, нижние — к колесу (видно, как вилка «ходит»)
+    const top=local(BIKE.forkTop.x,BIKE.forkTop.y),ax=BIKE.front.axis;
+    const up={x:ax.x*c-ax.y*s,y:ax.x*s+ax.y*c};
+    const upperEnd={x:top.x-up.x*.66,y:top.y-up.y*.66},sliderTop={x:fp.x+up.x*.80,y:fp.y+up.y*.80};
+    setDynamicRod(this.forkUpper[0],top,upperEnd,.09);setDynamicRod(this.forkUpper[1],top,upperEnd,.20);
+    setDynamicRod(this.forkLower[0],fp,sliderTop,.09);setDynamicRod(this.forkLower[1],fp,sliderTop,.20);
+    this.bike.fender.position.set(fp.x,fp.y,.42);this.bike.fender.rotation.z=angle;
+    // маятник + амортизатор
+    const pivot=local(BIKE.swingPivot.x,BIKE.swingPivot.y),shockTop=local(BIKE.shockTop.x,BIKE.shockTop.y);
+    setDynamicRod(this.swingarm[0],pivot,rp,.47);setDynamicRod(this.swingarm[1],pivot,rp,.57);
+    const shockLow=lerp(pivot,rp,.80);
+    setDynamicRod(this.shock,shockTop,shockLow,.62);
+    setDynamicRod(this.shockSpring,lerp(shockTop,shockLow,.18),lerp(shockTop,shockLow,.78),.62);
+    setDynamicRod(this.chain,rp,local(-.26,-.12),.56);
     const lean=(input.right?1:0)-(input.left?1:0);
     this.bike.rider.rotation.z+=((-lean*.13)-this.bike.rider.rotation.z)*Math.min(1,dt*9);
 
@@ -291,12 +339,12 @@ export class TrialWorld {
         const p=worldPoint(prop.body);this.seesawMesh.position.set(p.x,p.y,.01);this.seesawMesh.rotation.z=-prop.body.angle;
       }
     }
-    const groundY=this.heightAt(cp.x);
-    this.shadow.position.set(cp.x,groundY+.025,-.06);this.shadow.material.opacity=Math.max(0,.25-Math.abs(cp.y-groundY-1)*.055);
+    const midX=(rp.x+fp.x)/2,groundY=this.heightAt(midX);
+    this.shadow.position.set(midX,groundY+.025,-.06);this.shadow.material.opacity=Math.max(0,.25-Math.abs(cp.y-groundY-1)*.055);
 
     this.dustClock-=dt;
     if(physics.grounded&&Math.abs(physics.speed)>.7&&this.dustClock<=0){
-      this.particles.emit(rp.x,rp.y-.35,2,this.level.palette.top,Math.min(1.5,.5+Math.abs(physics.speed)*.1));this.dustClock=.055;
+      this.particles.emit(rp.x,rp.y-BIKE.rear.r+.05,2,this.level.palette.top,Math.min(1.5,.5+Math.abs(physics.speed)*.1));this.dustClock=.055;
     }
     if(this.checkpointFlag)this.checkpointFlag.rotation.y=Math.sin(time*3)*.16;
     this.particles.update(dt);

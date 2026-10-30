@@ -1,5 +1,5 @@
 import Matter from 'matter-js';
-import { SCALE } from './config.js';
+import { SCALE, BIKE } from './config.js';
 
 const { Engine, Bodies, Body, Composite, Constraint, Events, Query, Vector } = Matter;
 const mx = (x) => x * SCALE;
@@ -30,11 +30,17 @@ export class TrialPhysics {
 
   buildTerrain() {
     const pts = this.level.points;
+    const T = SCALE * .7;                       // толщина плиты
+    const lift = BIKE.surface * SCALE;          // верхняя грань чуть выше линии (как видимая полоса травы)
     for (let i=0;i<pts.length-1;i++) {
       const a = pts[i], b = pts[i+1];
       const dx = mx(b[0]-a[0]), dy = my(b[1])-my(a[1]);
       const length = Math.hypot(dx,dy);
-      const body = Bodies.rectangle(mx((a[0]+b[0])/2), my((a[1]+b[1])/2), length + 1.2, SCALE * .7, {
+      // единичная нормаль, направленная вверх (в координатах Matter ось y вниз)
+      const nx = dy/length, ny = -dx/length;
+      const shift = T/2 - lift;                 // плита уходит ПОД линию рельефа, а не центрируется на ней
+      const cx = mx((a[0]+b[0])/2) - nx*shift, cy = (my(a[1])+my(b[1]))/2 - ny*shift;
+      const body = Bodies.rectangle(cx, cy, length + 1.2, T, {
         isStatic: true, angle: Math.atan2(dy,dx), friction: 1.05, frictionStatic: 2, restitution: 0,
         label: 'terrain', chamfer: { radius: 2 }
       });
@@ -53,7 +59,7 @@ export class TrialPhysics {
       this.hazardBodies.push(body); this.props.push({type:'log',body,data:log});
     }
     for (const rock of this.level.rocks) {
-      const body = Bodies.circle(mx(rock.x),my(rock.y),mx(rock.r*.88),{
+      const body = Bodies.circle(mx(rock.x),my(rock.y),mx(rock.r*.97),{
         isStatic:true, friction:1.15, frictionStatic:2, restitution:.01, label:'rock'
       });
       this.hazardBodies.push(body); this.props.push({type:'rock',body,data:rock});
@@ -102,25 +108,75 @@ export class TrialPhysics {
   makeBike(spawn) {
     const group = Body.nextGroup(true);
     const filter = {group};
-    const chassis = Bodies.rectangle(mx(spawn.x),my(spawn.y+1.03),mx(1.2),mx(.28),{
-      density:.0034, friction:.45, restitution:0, label:'bike', collisionFilter:filter, chamfer:{radius:5}
+    const C = BIKE.chassis, R = BIKE.rear, F = BIKE.front;
+    // высота центра рамы над землёй при полностью разгруженной подвеске
+    const cy = spawn.y + BIKE.surface + .03 + R.r - R.rest.y;
+    const chassis = Bodies.rectangle(mx(spawn.x),my(cy),mx(C.w),mx(C.h),{
+      density:C.density, friction:.45, restitution:0, label:'bike', collisionFilter:filter, chamfer:{radius:5}
     });
-    const rear = Bodies.circle(mx(spawn.x-.72),my(spawn.y+.45),mx(.43),{
+    const rear = Bodies.circle(mx(spawn.x+R.rest.x),my(cy+R.rest.y),mx(R.r),{
       density:.0024, friction:1.35, frictionStatic:2.4, frictionAir:.008, restitution:.015,label:'bike',collisionFilter:filter
     });
-    const front = Bodies.circle(mx(spawn.x+.76),my(spawn.y+.45),mx(.43),{
+    const front = Bodies.circle(mx(spawn.x+F.rest.x),my(cy+F.rest.y),mx(F.r),{
       density:.0021, friction:1.05, frictionStatic:1.8, frictionAir:.008, restitution:.015,label:'bike',collisionFilter:filter
     });
-    const links = [
-      {a:{x:-.64,y:.02},wheel:rear},{a:{x:-.38,y:-.18},wheel:rear},
-      {a:{x:.60,y:.02},wheel:front},{a:{x:.36,y:-.18},wheel:front}
-    ].map((link,index)=>Constraint.create({
-      bodyA:chassis,pointA:{x:mx(link.a.x),y:my(link.a.y)},bodyB:link.wheel,pointB:{x:0,y:0},
-      length:0,stiffness:index%2?.34:.58,damping:.12
-    }));
+
+    // Подвеска: вдоль оси — пружина с демпфером (силы, applySuspension),
+    // поперёк — две жёсткие связи по обе стороны оси (получается «рельса»).
+    const suspensions = [], guides = [];
+    for (const [cfg, wheel] of [[R, rear], [F, front]]) {
+      const restPx = { x: mx(cfg.rest.x), y: my(cfg.rest.y) };
+      const axisPx = { x: cfg.axis.x, y: -cfg.axis.y };         // направление сжатия, Matter-координаты
+      const nrm = { x: -axisPx.y, y: axisPx.x };
+      const D = mx(cfg.guide);
+      for (const side of [1, -1]) {
+        guides.push(Constraint.create({
+          bodyA: chassis, pointA: { x: restPx.x + nrm.x*D*side, y: restPx.y + nrm.y*D*side },
+          bodyB: wheel, pointB: { x: 0, y: 0 }, length: D, stiffness: .9, damping: .12
+        }));
+      }
+      // жёсткость из желаемой частоты: ω² = k/m (в шагах), масса — половина рамы
+      const share = chassis.mass * .5;
+      const w = 2*Math.PI*cfg.freq/60, DT2 = (1000/60)**2;
+      const k = share * w*w / DT2;
+      suspensions.push({
+        wheel, restPx, axisPx,
+        k, kBump: k*14, kTop: k*18,
+        travelPx: mx(cfg.travel), freeze: 0,
+        cComp: share * 2*cfg.zComp*w / DT2,
+        cReb: share * 2*cfg.zReb*w / DT2,
+        maxForce: chassis.mass * 6 * .00125 * 40,
+        compression: 0
+      });
+    }
     const composite = Composite.create();
-    Composite.add(composite,[chassis,rear,front,...links]);
-    return {composite,chassis,rear,front,links};
+    Composite.add(composite,[chassis,rear,front,...guides]);
+    return {composite,chassis,rear,front,suspensions,guides};
+  }
+
+  applySuspension() {
+    const { chassis } = this.bike;
+    const cos = Math.cos(chassis.angle), sin = Math.sin(chassis.angle);
+    for (const s of this.bike.suspensions) {
+      const rot = (v) => ({ x: v.x*cos - v.y*sin, y: v.x*sin + v.y*cos });
+      const r = rot(s.restPx), a = rot(s.axisPx);
+      const p0 = { x: chassis.position.x + r.x, y: chassis.position.y + r.y };
+      const w = s.wheel;
+      // сжатие вдоль оси: >0 — колесо поднялось относительно рамы
+      const u = (w.position.x - p0.x)*a.x + (w.position.y - p0.y)*a.y;
+      // скорость точки крепления на раме
+      const vcx = chassis.velocity.x - chassis.angularVelocity*r.y;
+      const vcy = chassis.velocity.y + chassis.angularVelocity*r.x;
+      const vr = (w.velocity.x - vcx)*a.x + (w.velocity.y - vcy)*a.y;
+      let f = s.k * Math.max(u, 0);
+      if (u > s.travelPx) f += s.kBump * (u - s.travelPx);   // отбойник сжатия
+      if (u < 0) f += s.kTop * u;                            // отбойник отбоя
+      f += (vr > 0 ? s.cComp : s.cReb) * vr;                 // демпфер: отбой жёстче сжатия
+      f = Math.max(-s.maxForce, Math.min(s.maxForce, f));
+      w.force.x -= a.x*f; w.force.y -= a.y*f;
+      Body.applyForce(chassis, p0, { x: a.x*f, y: a.y*f });
+      s.compression = u / SCALE;
+    }
   }
 
   reset(spawn) {
@@ -150,12 +206,13 @@ export class TrialPhysics {
         rear.torque -= .19;
       }
     }
-    chassis.torque += lean * (grounded ? .075 : .19);
+    chassis.torque += lean * (grounded ? .075 : .19) * BIKE.leanScale;
     if (!throttle && !brake) {
       rear.torque -= rear.angularVelocity * .018;
       front.torque -= front.angularVelocity * .009;
     }
 
+    this.applySuspension();
     Engine.update(this.engine,1000/60);
     this.checkHead();
     if (chassis.position.y > my(-9) && !this.crashed) {
@@ -164,7 +221,7 @@ export class TrialPhysics {
   }
 
   checkHead() {
-    const local = Vector.create(mx(-.12),my(.99));
+    const local = Vector.create(mx(BIKE.head.x),my(BIKE.head.y));
     const offset = Vector.rotate(local,this.bike.chassis.angle);
     const point = {x:this.bike.chassis.position.x+offset.x,y:this.bike.chassis.position.y+offset.y};
     if (Query.point(this.hazardBodies,point).length && !this.crashed) {
@@ -174,6 +231,8 @@ export class TrialPhysics {
 
   get grounded() { return this.rearContacts.size + this.frontContacts.size > 0; }
   get speed() { return this.bike.chassis.velocity.x * 60 / SCALE; }
+  get rearCompression() { return this.bike.suspensions[0].compression; }
+  get frontCompression() { return this.bike.suspensions[1].compression; }
   get position() { return worldPoint(this.bike.chassis); }
   get rearPosition() { return worldPoint(this.bike.rear); }
   get frontPosition() { return worldPoint(this.bike.front); }
